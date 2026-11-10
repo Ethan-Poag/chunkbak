@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.cbtmp
+*.before-restore
+/backups/
+/world*/
+*.mca
+*.mcc
+.venv/
