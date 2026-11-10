@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chunkbak"
+version = "1.0.0"
+description = "FastBack-style incremental chunk-level snapshots for Minecraft Anvil worlds (vanilla, Fabric, Paper, Pumpkin)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Ethan Poag" }]
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["minecraft", "backup", "anvil", "fabric", "paper", "pumpkin", "incremental"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "Topic :: System :: Archiving :: Backup",
+  "Environment :: Console",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ethan-Poag/chunkbak"
+
+[project.scripts]
+chunkbak = "chunkbak:main"
+
+[tool.setuptools]
+py-modules = ["chunkbak"]

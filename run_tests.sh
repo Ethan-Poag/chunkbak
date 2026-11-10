@@ -3,7 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 PY=${PYTHON:-python3}
-for t in tests/test_roundtrip.py tests/test_torn_and_retention.py tests/test_guard.py; do
+for t in tests/test_roundtrip.py tests/test_rcon.py tests/test_torn_and_retention.py tests/test_guard.py; do
   echo "== $t"
   "$PY" "$t"
 done

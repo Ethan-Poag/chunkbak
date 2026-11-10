@@ -97,13 +97,34 @@ data = open(victim, 'rb').read(); open(victim, 'wb').write(data[:-1] + bytes([da
 check(run('verify', R, check=False).returncode == 1, 'verify catches a corrupted blob')
 open(victim, 'wb').write(data)
 
-check(run('prune', R, check=False).returncode != 0, 'prune refuses an empty policy')
+d = run('prune', R, '--dry-run').stdout
+check('policy (default)' in d and 'kept 3 of 3' in d, 'prune with no options uses the default policy (nothing to drop yet)')
+check(run('prune', R, '--keep-last', '0', check=False).returncode != 0, 'prune refuses an empty policy')
 d = run('prune', R, '--keep-last', '1', '--dry-run').stdout
 check(d.count('would drop') == 2 and len(os.listdir(R + '/snapshots')) == 3, 'prune --dry-run drops nothing')
 p = run('prune', R, '--keep-last', '1').stdout
 check('kept 1 of 3' in p and 'gc removed' in p, 'prune --keep-last 1 + gc: ' + p.strip().splitlines()[-1])
 run('restore', R, snaps[2], T + '/r3b')
 check(same(T + '/expect2', T + '/r3b') and '0 bad' in run('verify', R, '--deep').stdout, 'newest snapshot still restores after prune')
+
+# --- the beginner path: init WORLD, backup WORLD, list/verify/restore with the world path and 'latest'
+W2 = T + '/My World'
+fixture.make_world(W2, ver=0)
+r = run('init', W2)
+check(os.path.isdir(W2 + '-backups/snapshots') and 'First snapshot' in r.stdout and 'backup' in r.stdout,
+      'init WORLD creates "<world>-backups" and takes the first snapshot')
+check(run('init', T + '/nope', check=False).returncode != 0, 'init refuses a folder without level.dat')
+time.sleep(1.1)
+run('backup', W2); run('backup', W2 + '-backups')
+check(len(run('list', W2).stdout.splitlines()) == 3, 'backup WORLD and backup REPO (world from chunkbak.json) both work')
+check('0 bad' in run('verify', W2, 'latest', '--deep').stdout, 'verify WORLD latest')
+run('restore', W2, 'latest', T + '/r-latest')
+check(same(W2, T + '/r-latest'), 'restore WORLD latest DEST == world')
+check(run('restore', W2, 'nosuch', T + '/r-x', check=False).returncode != 0, 'unknown snapshot id is refused')
+# --every keeps running and snapshots repeatedly
+p = subprocess.Popen([sys.executable, CB, 'backup', W2, '--every', '0.02'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+time.sleep(4); p.terminate(); out, err = p.communicate()
+check(out.count('"seconds"') >= 2 and 'kept' in out and not err.strip(), '--every: %d snapshots in 4 s, daily prune ran' % out.count('"seconds"'))
 
 shutil.rmtree(T, ignore_errors=True)
 sys.exit(1 if fails else 0)

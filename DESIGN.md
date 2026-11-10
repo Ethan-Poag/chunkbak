@@ -74,3 +74,18 @@ chunkbak handles this as follows:
 - Optional zstd on non-region files.
 - A built-in off-site sync.
 - An in-game `/backup` command via a server plugin or mod.
+
+## Convenience layer
+- `init WORLD` checks for `level.dat`, creates `<world>-backups` next to the world (or a REPO you
+  pass), records the world path in `REPO/chunkbak.json`, takes the first snapshot, and prints the
+  cron or `schtasks` lines with absolute paths.
+- Commands that take REPO also accept the world folder and map it to its default repo. A SNAP
+  of `latest` resolves to the newest snapshot.
+- `backup --every MIN` loops forever. Each round is one snapshot, plus the default prune once a
+  day. A failed round is logged, and the next round tries again.
+- `--rcon HOST:PORT` speaks the RCON protocol itself (standard library `socket`): it logs in
+  with the password, then sends `save-all`. If RCON fails, chunkbak warns and backs up anyway.
+  With `--rcon` or `--pre-hook`, `--quiet-secs` defaults to 3.
+- On Windows, the repo lock uses `msvcrt` instead of `fcntl`, and there is no `/proc`, so the
+  live-server guard only checks `session.lock`. Manifest paths always use `/`, so a repo can be
+  read on any OS.

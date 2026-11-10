@@ -1,0 +1,26 @@
+# Minecraft server + chunkbak sidecar. Adjust paths, versions and passwords.
+services:
+  mc:
+    image: itzg/minecraft-server
+    environment:
+      EULA: "TRUE"
+      TYPE: PAPER            # or VANILLA, FABRIC, ...
+      RCON_PASSWORD: change-me
+    ports:
+      - "25565:25565"
+    volumes:
+      - ./data:/data
+
+  chunkbak:
+    image: python:3.12-slim
+    restart: unless-stopped
+    depends_on: [mc]
+    volumes:
+      - ./data/world:/world:ro          # read-only is fine for backups
+      - /mnt/backups/mc:/backups        # put this on another disk
+    environment:
+      CHUNKBAK_RCON_PASSWORD: change-me # same as RCON_PASSWORD above
+      TZ: America/New_York              # snapshot names and daily/weekly pruning use local time
+    command: >
+      sh -c "pip install -q --root-user-action=ignore https://github.com/Ethan-Poag/chunkbak/archive/main.zip &&
+             chunkbak backup /backups /world --every 15 --rcon mc:25575"

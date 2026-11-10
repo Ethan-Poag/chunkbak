@@ -7,3 +7,6 @@ __pycache__/
 *.mca
 *.mcc
 .venv/
+build/
+dist/
+*.egg-info/
