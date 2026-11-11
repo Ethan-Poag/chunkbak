@@ -14,7 +14,8 @@ Wherever REPO is asked for you can also give the WORLD folder: its default backu
 
 Commands:
   init    WORLD [REPO]                      create the backup folder, take the first snapshot
-  backup  [REPO] WORLD | REPO | WORLD       [--every MIN] [--rcon HOST:PORT] [--pre-hook CMD] [--note T] ...
+  backup  [REPO] WORLD | REPO | WORLD       [--every MIN] [--rcon HOST:PORT] [--pre-hook CMD] [--note T]
+            [--only-when-players HOST:PORT] [--idle-every 24h] ...
   list    REPO
   restore REPO SNAP DEST                    whole world into an empty DEST
   restore-chunks REPO SNAP WORLD --chunks x,z[;x,z...] [--dim DIR | --region REL] [--force]
@@ -42,14 +43,14 @@ Commands:
 # ('carried'). gzip .dat files are checked the same way. Optional --pre-hook (e.g. send
 # `save-all` to the server console) and --quiet-secs (wait until no world file changed
 # for that long) run before reading.
-import argparse, gzip, hashlib, json, os, posixpath, struct, sys, time, shutil, subprocess, zlib, collections
+import argparse, gzip, hashlib, json, os, posixpath, socket, struct, sys, time, shutil, subprocess, zlib, collections
 try:
     import fcntl
 except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 CONFIG = 'chunkbak.json'
 DEFAULT_POLICY = dict(keep_last=8, hourly=48, daily=14, weekly=8, monthly=6)
 
@@ -336,6 +337,184 @@ def rcon(addr, password, command, timeout=10):
         return recv(sock)[1]
 
 
+
+# ---------------------------------------------------------------- server list ping / idle skip
+def pack_varint(n):
+    if n < 0:
+        n &= 0xFFFFFFFF
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def unpack_varint(buf, i=0):
+    n = shift = 0
+    while True:
+        if i >= len(buf):
+            raise ValueError('short varint')
+        b = buf[i]; i += 1
+        n |= (b & 0x7F) << shift
+        if not b & 0x80:
+            return n, i
+        shift += 7
+        if shift >= 35:
+            raise ValueError('varint too long')
+
+
+def _recv_exact(sock, n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise OSError('connection closed')
+        buf += chunk
+    return bytes(buf)
+
+
+def _recv_varint(sock):
+    buf = bytearray()
+    while True:
+        b = sock.recv(1)
+        if not b:
+            raise OSError('connection closed')
+        buf += b
+        if not b[0] & 0x80:
+            n, _ = unpack_varint(buf)
+            return n
+        if len(buf) >= 5:
+            raise ValueError('varint too long')
+
+
+def parse_duration(s):
+    """'24h', '90m', '1d', '2s' (and a bare integer as seconds) -> seconds."""
+    s = str(s).strip().lower()
+    if s.isdigit():
+        return int(s)
+    units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+    if len(s) >= 2 and s[-1] in units and s[:-1].replace('.', '', 1).isdigit():
+        return float(s[:-1]) * units[s[-1]]
+    raise ValueError('invalid duration %r (use e.g. 24h, 90m, 1d)' % s)
+
+
+def split_hostport(s):
+    if s.startswith('['):
+        host, rest = s[1:].split(']', 1)
+        if not rest.startswith(':'):
+            raise ValueError('need HOST:PORT')
+        port = rest[1:]
+    else:
+        if ':' not in s:
+            raise ValueError('need HOST:PORT')
+        host, port = s.rsplit(':', 1)
+    port = int(port)
+    if not host or not (1 <= port <= 65535):
+        raise ValueError('need HOST:PORT')
+    return host, port
+
+
+def status_online(hostport, timeout=3.0):
+    """Minecraft Java server list ping -> players.online (int). Raises on failure."""
+    host, port = split_hostport(hostport)
+    addr = host.encode()
+    handshake = (pack_varint(0) + pack_varint(-1) + pack_varint(len(addr)) + addr
+                 + struct.pack('>H', port) + pack_varint(1))
+    sock = socket.create_connection((host, port), timeout)
+    try:
+        sock.settimeout(timeout)
+        sock.sendall(pack_varint(len(handshake)) + handshake + pack_varint(1) + pack_varint(0))
+        length = _recv_varint(sock)
+        if length < 1 or length > 2 * 1024 * 1024:
+            raise ValueError('bad status length %d' % length)
+        data = _recv_exact(sock, length)
+    finally:
+        sock.close()
+    pid, i = unpack_varint(data, 0)
+    if pid != 0:
+        raise ValueError('unexpected packet id %d' % pid)
+    slen, i = unpack_varint(data, i)
+    info = json.loads(data[i:i + slen].decode('utf-8'))
+    return int(info['players']['online'])
+
+
+def player_state_path(repo):
+    return os.path.join(repo, 'players.state')
+
+
+def load_player_state(repo):
+    try:
+        with open(player_state_path(repo)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def save_player_state(repo, online):
+    os.makedirs(repo, exist_ok=True)
+    p = player_state_path(repo)
+    tmp = p + '.tmp%d' % os.getpid()
+    with open(tmp, 'w') as f:
+        json.dump({'online': online, 'checked_at': time.time()}, f, separators=(',', ':'))
+        f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+def newest_snapshot_age(repo):
+    """Seconds since the newest snapshot was created, or None if there isn't one."""
+    snapdir = os.path.join(repo, 'snapshots')
+    try:
+        ids = sorted(n[:-8] for n in os.listdir(snapdir) if n.endswith('.json.gz'))
+    except OSError:
+        return None
+    if not ids:
+        return None
+    path = os.path.join(snapdir, ids[-1] + '.json.gz')
+    with gzip.open(path, 'rt') as f:
+        created = json.load(f).get('created')
+    if not created:
+        created = os.path.getmtime(path)
+    return time.time() - created
+
+
+def format_age(secs):
+    if secs >= 3600:
+        return '%.1fh' % (secs / 3600.0)
+    if secs >= 60:
+        return '%.0fm' % (secs / 60.0)
+    return '%.0fs' % secs
+
+
+def skip_idle_backup(repo, hostport, idle_every):
+    """True if this backup should be skipped. Never takes the repo lock.
+    A missing or unreadable state file is treated as previous count > 0 (safe)."""
+    try:
+        idle_secs = parse_duration(idle_every)
+    except ValueError as ex:
+        sys.exit(str(ex))
+    prev = load_player_state(repo)
+    prev_online = 1 if (prev is None or not isinstance(prev.get('online'), (int, float))) else int(prev['online'])
+    try:
+        online = status_online(hostport)
+    except Exception as ex:
+        print('WARN status ping %s failed: %s; taking snapshot' % (hostport, ex), file=sys.stderr)
+        save_player_state(repo, prev_online)
+        return False
+    save_player_state(repo, online)
+    if online > 0 or prev_online > 0:
+        return False
+    age = newest_snapshot_age(repo)
+    if age is None or age >= idle_secs:
+        return False
+    print('skip: 0 players, last snapshot %s ago' % format_age(age), flush=True)
+    return True
+
+
+
 def backup_targets(paths):
     """backup REPO WORLD | backup WORLD | backup REPO -> (repo, world)."""
     if len(paths) == 2:
@@ -378,6 +557,8 @@ def cmd_backup(a):
 
 
 def backup_once(a):
+    if getattr(a, 'only_when_players', None) and skip_idle_backup(a.repo, a.only_when_players, a.idle_every):
+        return None
     repo = Repo(a.repo); repo.lock()
     if not os.path.exists(os.path.join(a.repo, CONFIG)):
         with open(os.path.join(a.repo, CONFIG), 'w') as f:
@@ -478,6 +659,9 @@ def cmd_init(a):
         print('%s already has backups; taking a new snapshot.' % repo)
     a.repo, a.world = repo, world
     sid = backup_once(a)
+    if not sid:
+        print('no snapshot taken (idle skip); run again or drop --only-when-players for the first snapshot')
+        return
     if sys.argv[0].endswith('.py'):
         exe = '"%s" "%s"' % (sys.executable, os.path.abspath(sys.argv[0]))
     else:
@@ -766,6 +950,10 @@ def main():
     backup_opts.add_argument('--quiet-secs', type=float, help='wait until no world file changed for this long (default 3 with --rcon/--pre-hook, else 0)')
     backup_opts.add_argument('--max-wait', type=float, default=60); backup_opts.add_argument('--retries', type=int, default=5)
     backup_opts.add_argument('--retry-delay', type=float, default=0.2)
+    backup_opts.add_argument('--only-when-players', metavar='HOST:PORT',
+                            help='skip the snapshot when the Java server has 0 players (one final snapshot after the last logout; still snapshot if the last one is older than --idle-every)')
+    backup_opts.add_argument('--idle-every', default='24h', metavar='DURATION',
+                            help='with --only-when-players, still snapshot this often when idle (e.g. 24h, 90m, 1d; default 24h)')
     i = sp.add_parser('init', parents=[backup_opts], help='set up backups for a world and take the first snapshot')
     i.add_argument('world'); i.add_argument('repo', nargs='?', help='backup folder (default: <world>-backups next to the world)')
     b = sp.add_parser('backup', parents=[backup_opts], help='take a snapshot')

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chunkbak"
-version = "1.0.0"
+version = "1.1.0"
 description = "FastBack-style incremental chunk-level snapshots for Minecraft Anvil worlds (vanilla, Fabric, Paper, Pumpkin)."
 readme = "README.md"
 license = { text = "MIT" }

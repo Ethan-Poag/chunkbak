@@ -77,6 +77,22 @@ example:
 Neither option is required. chunkbak detects chunks the server is writing mid-read, retries them,
 and never stores a torn chunk.
 
+### Skip backups when nobody is playing
+
+If you only want snapshots while people are on the server (and one last snapshot when the last
+person leaves), add `--only-when-players HOST:PORT`. chunkbak pings the Java server the same
+way the multiplayer server list does, so it needs no RCON and no mods. With nobody online it
+only snapshots once every `--idle-every` (default 24h). If the server doesn't answer, it
+backs up anyway.
+
+```sh
+chunkbak backup WORLD --every 15 --only-when-players localhost:25565 --idle-every 24h
+```
+
+The check runs before `--rcon` / `--pre-hook`, so a skipped run does not poke the server or
+take the repo lock.
+
+
 ## Scheduling
 
 ### Linux / macOS (cron)
@@ -216,7 +232,8 @@ or `dimensions/minecraft/the_nether`) or `--region dim/region/r.X.Z.mca` for any
 ```
 init    WORLD [REPO]                    set up REPO (default: <world>-backups next to it) + first snapshot
 backup  WORLD | REPO | REPO WORLD       [--every MIN] [--rcon HOST:PORT] [--rcon-password P] [--rcon-command C]
-                                        [--pre-hook CMD] [--quiet-secs S] [--max-wait S] [--retries N] [--note T]
+                                        [--pre-hook CMD] [--only-when-players HOST:PORT] [--idle-every 24h]
+                                        [--quiet-secs S] [--max-wait S] [--retries N] [--note T]
 list    REPO
 restore REPO SNAP DEST                  whole world into an empty or missing DEST
 restore-chunks REPO SNAP WORLD --chunks 'x,z;x,z' [--dim DIR | --region REL] [--force]
@@ -269,6 +286,7 @@ world data:
 - a backup, incremental and restore round trip;
 - the beginner path: `init`, the world-folder shortcuts, `latest` and `--every`;
 - RCON save-before-backup, against a fake RCON server;
+- `--only-when-players`, against a fake server-list responder;
 - chunk restore;
 - prune, gc and verify, including corruption detection;
 - a hostile-writer test that rewrites a region file out of order during 40 back-to-back backups;
